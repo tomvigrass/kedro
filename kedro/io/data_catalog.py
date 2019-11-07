@@ -14,8 +14,8 @@
 # ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF, OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
-# The QuantumBlack Visual Analytics Limited (“QuantumBlack”) name and logo
-# (either separately or in combination, “QuantumBlack Trademarks”) are
+# The QuantumBlack Visual Analytics Limited ("QuantumBlack") name and logo
+# (either separately or in combination, "QuantumBlack Trademarks") are
 # trademarks of QuantumBlack. The License does not grant you any right or
 # license to the QuantumBlack Trademarks. You may not use the QuantumBlack
 # Trademarks or any confusingly similar mark as a trademark for your product,
@@ -34,17 +34,19 @@ relaying load and save functions to the underlying data sets.
 import copy
 import logging
 from functools import partial
-from typing import Any, Dict, List, Optional, Sequence, Type, Union
+from typing import Any, Dict, Iterable, List, Optional, Type, Union
+from warnings import warn
 
 from kedro.io.core import (
     AbstractDataSet,
     DataSetAlreadyExistsError,
     DataSetError,
     DataSetNotFoundError,
-    generate_current_version,
+    generate_timestamp,
 )
 from kedro.io.memory_data_set import MemoryDataSet
 from kedro.io.transformers import AbstractTransformer
+from kedro.versioning import Journal
 
 CATALOG_KEY = "catalog"
 CREDENTIALS_KEY = "credentials"
@@ -76,6 +78,22 @@ def _get_credentials(credentials_name: str, credentials: Dict) -> Dict:
         )
 
 
+class _FrozenDatasets:
+    """Helper class to access underlying loaded datasets"""
+
+    def __init__(self, datasets):
+        self.__dict__.update(**datasets)
+
+    # Don't allow users to add/change attributes on the fly
+    def __setattr__(self, key, value):
+        msg = "Operation not allowed! "
+        if key in self.__dict__.keys():
+            msg += "Please change datasets through configuration."
+        else:
+            msg += "Please use DataCatalog.add() instead."
+        raise AttributeError(msg)
+
+
 class DataCatalog:
     """``DataCatalog`` stores instances of ``AbstractDataSet`` implementations
     to provide ``load`` and ``save`` capabilities from anywhere in the
@@ -85,12 +103,14 @@ class DataCatalog:
     to the underlying data sets.
     """
 
+    # pylint: disable=too-many-arguments
     def __init__(
         self,
         data_sets: Dict[str, AbstractDataSet] = None,
         feed_dict: Dict[str, Any] = None,
         transformers: Dict[str, List[AbstractTransformer]] = None,
         default_transformers: List[AbstractTransformer] = None,
+        journal: Journal = None,
     ) -> None:
         """``DataCatalog`` stores instances of ``AbstractDataSet``
         implementations to provide ``load`` and ``save`` capabilities from
@@ -106,6 +126,7 @@ class DataCatalog:
                 to the data sets.
             default_transformers: A list of transformers to be applied to any
                 new data sets.
+            journal: Instance of Journal.
         Raises:
             DataSetNotFoundError: When transformers are passed for a non
                 existent data set.
@@ -121,13 +142,19 @@ class DataCatalog:
             >>> io = DataCatalog(data_sets={'cars': cars})
         """
         self._data_sets = dict(data_sets or {})
+        self.datasets = _FrozenDatasets(self._data_sets)
+
         self._transformers = {k: list(v) for k, v in (transformers or {}).items()}
         self._default_transformers = list(default_transformers or [])
         self._check_and_normalize_transformers()
-
+        self._journal = journal
         # import the feed dict
         if feed_dict:
             self.add_feed_dict(feed_dict)
+
+    @property
+    def _logger(self):
+        return logging.getLogger(__name__)
 
     def _check_and_normalize_transformers(self):
         data_sets = self._data_sets.keys()
@@ -145,10 +172,7 @@ class DataCatalog:
         for data_set_name in missing_transformers:
             self._transformers[data_set_name] = list(self._default_transformers)
 
-    @property
-    def _logger(self):
-        return logging.getLogger(__name__)
-
+    # pylint: disable=too-many-arguments
     @classmethod
     def from_config(
         cls: Type,
@@ -156,6 +180,7 @@ class DataCatalog:
         credentials: Dict[str, Dict[str, Any]] = None,
         load_versions: Dict[str, str] = None,
         save_version: str = None,
+        journal: Journal = None,
     ) -> "DataCatalog":
         """Create a ``DataCatalog`` instance from configuration. This is a
         factory method used to provide developers with a way to instantiate
@@ -180,6 +205,7 @@ class DataCatalog:
                 case-insensitive string that conforms with operating system
                 filename limitations, b) always return the latest version when
                 sorted in lexicographical order.
+            journal: Instance of Journal.
 
         Returns:
             An instantiated ``DataCatalog`` containing all specified
@@ -226,8 +252,17 @@ class DataCatalog:
         data_sets = {}
         catalog = copy.deepcopy(catalog) or {}
         credentials = copy.deepcopy(credentials) or {}
-        save_version = save_version or generate_current_version()
+        run_id = journal.run_id if journal else None
+        save_version = save_version or run_id or generate_timestamp()
         load_versions = copy.deepcopy(load_versions) or {}
+
+        missing_keys = load_versions.keys() - catalog.keys()
+        if missing_keys:
+            warn(
+                "`load_versions` keys [{}] are not found in the catalog.".format(
+                    ", ".join(sorted(missing_keys))
+                )
+            )
 
         for ds_name, ds_config in catalog.items():
             if "type" not in ds_config:
@@ -242,7 +277,7 @@ class DataCatalog:
             data_sets[ds_name] = AbstractDataSet.from_config(
                 ds_name, ds_config, load_versions.get(ds_name), save_version
             )
-        return cls(data_sets=data_sets)
+        return cls(data_sets=data_sets, journal=journal)
 
     def _get_transformed_dataset_function(self, data_set_name, operation):
         data_set = self._data_sets[data_set_name]
@@ -276,16 +311,23 @@ class DataCatalog:
             >>>
             >>> df = io.load("cars")
         """
-        if name in self._data_sets:
-            self._logger.info(
-                "Loading data from `%s` (%s)...",
-                name,
-                type(self._data_sets[name]).__name__,
+        if name not in self._data_sets:
+            raise DataSetNotFoundError(
+                "DataSet '{}' not found in the catalog".format(name)
             )
-            func = self._get_transformed_dataset_function(name, "load")
-            return func()
 
-        raise DataSetNotFoundError("DataSet '{}' not found in the catalog".format(name))
+        self._logger.info(
+            "Loading data from `%s` (%s)...", name, type(self._data_sets[name]).__name__
+        )
+
+        func = self._get_transformed_dataset_function(name, "load")
+        result = func()
+
+        version = self._data_sets[name].get_last_load_version()
+        # Log only if versioning is enabled for the data set
+        if self._journal and version:
+            self._journal.log_catalog(name, "load", version)
+        return result
 
     def save(self, name: str, data: Any) -> None:
         """Save data to a registered data set.
@@ -316,18 +358,22 @@ class DataCatalog:
             >>>                    'col3': [5, 6]})
             >>> io.save("cars", df)
         """
-        if name in self._data_sets:
-            self._logger.info(
-                "Saving data to `%s` (%s)...",
-                name,
-                type(self._data_sets[name]).__name__,
-            )
-            func = self._get_transformed_dataset_function(name, "save")
-            func(data)
-        else:
+        if name not in self._data_sets:
             raise DataSetNotFoundError(
                 "DataSet '{}' not found in the catalog".format(name)
             )
+
+        self._logger.info(
+            "Saving data to `%s` (%s)...", name, type(self._data_sets[name]).__name__
+        )
+
+        func = self._get_transformed_dataset_function(name, "save")
+        func(data)
+
+        version = self._data_sets[name].get_last_save_version()
+        # Log only if versioning is enabled for the data set
+        if self._journal and version:
+            self._journal.log_catalog(name, "save", version)
 
     def exists(self, name: str) -> bool:
         """Checks whether registered data set exists by calling its `exists()`
@@ -348,6 +394,23 @@ class DataCatalog:
             return self._data_sets[name].exists()
 
         raise DataSetNotFoundError("DataSet '{}' not found in the catalog".format(name))
+
+    def release(self, name: str):
+        """Release any cached data associated with a data set
+
+        Args:
+            name: A data set to be checked.
+
+        Raises:
+            DataSetNotFoundError: When a data set with the given name
+                has not yet been registered.
+        """
+        if name not in self._data_sets:
+            raise DataSetNotFoundError(
+                "DataSet '{}' not found in the catalog".format(name)
+            )
+
+        self._data_sets[name].release()
 
     def add(
         self, data_set_name: str, data_set: AbstractDataSet, replace: bool = False
@@ -386,6 +449,7 @@ class DataCatalog:
                 )
         self._data_sets[data_set_name] = data_set
         self._transformers[data_set_name] = list(self._default_transformers)
+        self.datasets = _FrozenDatasets(self._data_sets)
 
     def add_all(
         self, data_sets: Dict[str, AbstractDataSet], replace: bool = False
@@ -458,7 +522,7 @@ class DataCatalog:
     def add_transformer(
         self,
         transformer: AbstractTransformer,
-        data_set_names: Union[str, Sequence[str]] = None,
+        data_set_names: Union[str, Iterable[str]] = None,
     ):
         """Add a ``DataSet`` Transformer to the``DataCatalog``.
         Transformers can modify the way Data Sets are loaded and saved.
@@ -510,24 +574,18 @@ class DataCatalog:
             data_sets=self._data_sets,
             transformers=self._transformers,
             default_transformers=self._default_transformers,
+            journal=self._journal,
         )
 
     def __eq__(self, other):
-        return (self._data_sets, self._transformers, self._default_transformers) == (
+        return (
+            self._data_sets,
+            self._transformers,
+            self._default_transformers,
+            self._journal,
+        ) == (
             other._data_sets,  # pylint: disable=protected-access
             other._transformers,  # pylint: disable=protected-access
             other._default_transformers,  # pylint: disable=protected-access
+            other._journal,  # pylint: disable=protected-access
         )
-
-    def set_remaining_loads(self, ds_name: str, remaining_loads: int):
-        """Set the maximum number of times the given dataset can be loaded. Datasets like
-        ``MemoryDataSet`` use this to clear data from memory. In most other cases, this has no
-        effect.
-
-        Args:
-            ds_name: The dataset to modify
-            remaining_loads: Maximum number of times ``load`` method of the
-                data set is allowed to be invoked. Any number of calls
-                is allowed if the argument is not set.
-        """
-        self._data_sets[ds_name].set_remaining_loads(remaining_loads)

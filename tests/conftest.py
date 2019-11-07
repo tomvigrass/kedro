@@ -14,8 +14,8 @@
 # ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF, OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
-# The QuantumBlack Visual Analytics Limited (“QuantumBlack”) name and logo
-# (either separately or in combination, “QuantumBlack Trademarks”) are
+# The QuantumBlack Visual Analytics Limited ("QuantumBlack") name and logo
+# (either separately or in combination, "QuantumBlack Trademarks") are
 # trademarks of QuantumBlack. The License does not grant you any right or
 # license to the QuantumBlack Trademarks. You may not use the QuantumBlack
 # Trademarks or any confusingly similar mark as a trademark for your product,
@@ -28,12 +28,13 @@
 
 """
 This file contains the fixtures that are reusable by any tests within
-this directory. You don’t need to import the fixtures as pytest will
+this directory. You don't need to import the fixtures as pytest will
 discover them automatically. More info here:
 https://docs.pytest.org/en/latest/fixture.html
 """
-
 import gc
+import os
+import sys
 from subprocess import Popen
 
 import pytest
@@ -49,10 +50,11 @@ class UseTheSparkSessionFixtureOrMock:  # pylint: disable=too-few-public-methods
 
 # prevent using spark without going through the spark_session fixture
 @pytest.fixture(scope="session", autouse=True)
-def no_spark():
+def replace_spark_default_getorcreate():
     global the_real_getOrCreate  # pylint: disable=global-statement
     the_real_getOrCreate = SparkSession.builder.getOrCreate
     SparkSession.builder.getOrCreate = UseTheSparkSessionFixtureOrMock
+    return the_real_getOrCreate
 
 
 # clean up pyspark after the test module finishes
@@ -70,5 +72,24 @@ def spark_session():
 
     # py4j doesn't shutdown properly so kill the actual JVM process
     for obj in gc.get_objects():
-        if isinstance(obj, Popen) and "pyspark" in obj.args[0]:
-            obj.terminate()
+        try:
+            if isinstance(obj, Popen) and "pyspark" in obj.args[0]:
+                obj.terminate()
+        except ReferenceError:  # pragma: no cover
+            # gc.get_objects may return dead weak proxy objects that will raise
+            # ReferenceError when you isinstance them
+            pass
+
+
+@pytest.fixture(autouse=True)
+def preserve_system_context():
+    """
+    Revert some changes to the application context tests do to isolate them.
+    """
+    old_path = sys.path.copy()
+    old_cwd = os.getcwd()
+    yield
+    sys.path = old_path
+
+    if os.getcwd() != old_cwd:
+        os.chdir(old_cwd)

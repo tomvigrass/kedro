@@ -14,8 +14,8 @@
 # ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF, OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
-# The QuantumBlack Visual Analytics Limited (“QuantumBlack”) name and logo
-# (either separately or in combination, “QuantumBlack Trademarks”) are
+# The QuantumBlack Visual Analytics Limited ("QuantumBlack") name and logo
+# (either separately or in combination, "QuantumBlack Trademarks") are
 # trademarks of QuantumBlack. The License does not grant you any right or
 # license to the QuantumBlack Trademarks. You may not use the QuantumBlack
 # Trademarks or any confusingly similar mark as a trademark for your product,
@@ -98,6 +98,23 @@ def test_log_time_with_partial(recwarn):
 
 def test_mem_profile(caplog):
     caplog.clear()
+    func = mem_profile(sleeping_identity)
+    res = func(1)
+
+    logger_name, severity, message = caplog.record_tuples[0]
+    assert res == 1
+    assert logger_name == "kedro.pipeline.decorators"
+    assert severity == logging.INFO
+    expected = "Running '%s.%s' consumed" % (
+        sleeping_identity.__module__,
+        sleeping_identity.__qualname__,
+    )
+    assert expected in message
+
+
+def test_mem_profile_old_versions(caplog, mocker):
+    caplog.clear()
+    mocker.patch("kedro.pipeline.decorators.memory_usage", return_value=[[float(0)], 1])
     func = mem_profile(sleeping_identity)
     res = func(1)
 

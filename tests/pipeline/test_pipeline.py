@@ -14,8 +14,8 @@
 # ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF, OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
-# The QuantumBlack Visual Analytics Limited (“QuantumBlack”) name and logo
-# (either separately or in combination, “QuantumBlack Trademarks”) are
+# The QuantumBlack Visual Analytics Limited ("QuantumBlack") name and logo
+# (either separately or in combination, "QuantumBlack Trademarks") are
 # trademarks of QuantumBlack. The License does not grant you any right or
 # license to the QuantumBlack Trademarks. You may not use the QuantumBlack
 # Trademarks or any confusingly similar mark as a trademark for your product,
@@ -25,19 +25,48 @@
 #
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 from functools import wraps
 from itertools import chain
 from typing import Callable
 
 import pytest
-from pytest import fixture
 
 import kedro
 from kedro.io import DataCatalog
 from kedro.pipeline import Pipeline, node
-from kedro.pipeline.pipeline import CircularDependencyError, OutputNotUniqueError
+from kedro.pipeline.pipeline import (
+    CircularDependencyError,
+    OutputNotUniqueError,
+    _get_transcode_compatible_name,
+    _transcode_join,
+    _transcode_split,
+)
 from kedro.runner import SequentialRunner
+
+
+class TestTranscodeHelpers:
+    def test_split_no_transcode_part(self):
+        assert _transcode_split("abc") == ("abc", "")
+
+    def test_split_with_transcode(self):
+        assert _transcode_split("abc@def") == ("abc", "def")
+
+    def test_split_too_many_parts(self):
+        with pytest.raises(ValueError):
+            _transcode_split("abc@def@ghi")
+
+    def test_join_no_transcode_part(self):
+        assert _transcode_join(("abc", "")) == "abc"
+
+    def test_join_with_transcode_part(self):
+        assert _transcode_join(("abc", "def")) == "abc@def"
+
+    def test_join_too_many_parts(self):
+        with pytest.raises(ValueError):
+            _transcode_join(("a", "b", "c"))  # type: ignore
+
+    def test_get_transcode_compatible_name(self):
+        assert _get_transcode_compatible_name("abc@def") == "abc"
 
 
 # Different dummy func based on the number of arguments
@@ -57,7 +86,7 @@ def triconcat(input1: str, input2: str, input3: str):
     return input1 + input2 + input3  # pragma: no cover
 
 
-@fixture
+@pytest.fixture
 def branchless_pipeline():
     return {
         "nodes": [
@@ -81,7 +110,7 @@ def branchless_pipeline():
     }
 
 
-@fixture
+@pytest.fixture
 def pipeline_list_with_lists():
     return {
         "nodes": [
@@ -115,7 +144,7 @@ def pipeline_list_with_lists():
     }
 
 
-@fixture
+@pytest.fixture
 def pipeline_with_dicts():
     return {
         "nodes": [
@@ -149,7 +178,7 @@ def pipeline_with_dicts():
     }
 
 
-@fixture
+@pytest.fixture
 def free_input_needed_pipeline():
     return {
         "nodes": [
@@ -167,7 +196,7 @@ def free_input_needed_pipeline():
     }
 
 
-@fixture
+@pytest.fixture
 def disjoint_pipeline():
     # Two separate pipelines: A->B->C and D->E->F
     return {
@@ -192,7 +221,7 @@ def disjoint_pipeline():
     }
 
 
-@fixture
+@pytest.fixture
 def pipeline_input_duplicated():
     return {
         "nodes": [
@@ -210,7 +239,7 @@ def pipeline_input_duplicated():
     }
 
 
-@fixture
+@pytest.fixture
 def str_node_inputs_list():
     return {
         "nodes": [
@@ -226,58 +255,6 @@ def str_node_inputs_list():
     }
 
 
-@fixture
-def pipeline_with_namespaces():
-    return {
-        "nodes": [
-            node(identity, "A", "B@pandas", name="node1"),
-            node(identity, "B@pandas", "C", name="node2"),
-            node(identity, "B@spark", "D", name="node3"),
-        ],
-        "expected": [
-            {node(identity, "A", "B@pandas", name="node1")},  # no dependency
-            {
-                node(identity, "B@pandas", "C", name="node2"),  # one dependency
-                node(identity, "B@spark", "D", name="node3"),
-            },
-        ],
-        "free_inputs": ["A"],
-        "outputs": ["C", "D"],
-    }
-
-
-@fixture
-def pipeline_with_duplicate_namespaces_inputs():
-    return {
-        "nodes": [
-            node(identity, "A", "B@pandas", name="node1"),
-            node(biconcat, ["B@spark", "B@pandas"], "C", name="node2"),
-        ],
-        "expected": [
-            {node(identity, "A", "B@pandas", name="node1")},
-            {node(biconcat, ["B@spark", "B@pandas"], "C", name="node2")},
-        ],
-        "free_inputs": ["A"],
-        "outputs": ["C"],
-    }
-
-
-@fixture
-def pipeline_with_namespaced_free_input():
-    return {
-        "nodes": [
-            node(identity, "B@pandas", "C", name="node1"),
-            node(identity, "C", "D", name="node2"),
-        ],
-        "expected": [
-            {node(identity, "B@pandas", "C", name="node1")},
-            {node(identity, "C", "D", name="node2")},
-        ],
-        "free_inputs": ["B@pandas"],
-        "outputs": ["D"],
-    }
-
-
 @pytest.fixture(
     params=[
         "branchless_pipeline",
@@ -287,9 +264,6 @@ def pipeline_with_namespaced_free_input():
         "disjoint_pipeline",
         "pipeline_input_duplicated",
         "str_node_inputs_list",
-        "pipeline_with_namespaces",
-        "pipeline_with_namespaced_free_input",
-        "pipeline_with_duplicate_namespaces_inputs",
     ]
 )
 def input_data(request):
@@ -362,9 +336,65 @@ class TestValidPipeline:
         assert new_pipeline.outputs() == {"output"}
         assert {n.name for n in new_pipeline.nodes} == {"a"}
 
+    def test_intersection(self):
+        pipeline1 = Pipeline(
+            [
+                node(biconcat, ["input", "input1"], "output1", name="a"),
+                node(biconcat, ["input", "input2"], "output2", name="b"),
+            ]
+        )
+        pipeline2 = Pipeline([node(biconcat, ["input", "input2"], "output2", name="b")])
+        new_pipeline = pipeline1 & pipeline2
+        assert new_pipeline.inputs() == {"input", "input2"}
+        assert new_pipeline.outputs() == {"output2"}
+        assert {n.name for n in new_pipeline.nodes} == {"b"}
+
+    def test_invalid_intersection(self):
+        p = Pipeline([])
+        pattern = r"unsupported operand type\(s\) for &: 'Pipeline' and 'str'"
+        with pytest.raises(TypeError, match=pattern):
+            p & "hello"  # pylint: disable=pointless-statement
+
+    def test_union(self):
+        pipeline1 = Pipeline(
+            [
+                node(biconcat, ["input", "input1"], "output1", name="a"),
+                node(biconcat, ["input", "input2"], "output2", name="b"),
+            ]
+        )
+        pipeline2 = Pipeline([node(biconcat, ["input", "input2"], "output2", name="b")])
+        new_pipeline = pipeline1 | pipeline2
+        assert new_pipeline.inputs() == {"input", "input1", "input2"}
+        assert new_pipeline.outputs() == {"output1", "output2"}
+        assert {n.name for n in new_pipeline.nodes} == {"a", "b"}
+
+    def test_invalid_union(self):
+        p = Pipeline([])
+        pattern = r"unsupported operand type\(s\) for |: 'Pipeline' and 'str'"
+        with pytest.raises(TypeError, match=pattern):
+            p | "hello"  # pylint: disable=pointless-statement
+
     def test_empty_case(self):
         """Empty pipeline is possible"""
         Pipeline([])
+
+    def test_pipeline_name_is_deprecated(self):
+        with pytest.warns(DeprecationWarning, match=r"`name` parameter is deprecated"):
+            pipeline = Pipeline([], name="p_name")
+
+        with pytest.warns(DeprecationWarning, match=r"`Pipeline\.name` is deprecated"):
+            assert pipeline.name == "p_name"
+
+    def test_initialized_with_tags(self):
+        pipeline = Pipeline(
+            [node(identity, "A", "B", tags=["node1", "p1"]), node(identity, "B", "C")],
+            tags=["p1", "p2"],
+        )
+
+        node1 = pipeline.grouped_nodes[0].pop()
+        node2 = pipeline.grouped_nodes[1].pop()
+        assert node1.tags == {"node1", "p1", "p2"}
+        assert node2.tags == {"p1", "p2"}
 
 
 def pipeline_with_circle():
@@ -447,31 +477,6 @@ class TestInvalidPipeline:
         )
         with pytest.raises(OutputNotUniqueError, match=r"\['output'\]"):
             pipeline1 + new_pipeline  # pylint: disable=pointless-statement
-
-    def test_namespaced_inputs_outputs(self):
-        """Nodes must not refer to a dataset without the separator if
-        it is referenced later on in the catalog.
-        """
-        pattern = "The following datasets are used with transcoding, "
-        pattern += "but were referenced without the separator: B."
-        with pytest.raises(ValueError, match=pattern):
-            Pipeline(
-                [
-                    node(identity, "A", "B", name="node1"),
-                    node(identity, "B@pandas", "C", name="node2"),
-                    node(identity, "B@spark", "D", name="node3"),
-                    node(biconcat, ["A", "D"], "E", name="node4"),
-                ]
-            )
-
-    def test_namespace_duplicates_in_outputs(self):
-        with pytest.raises(OutputNotUniqueError, match="['B']"):
-            Pipeline(
-                [
-                    node(identity, "A", "B@pandas", name="node1"),
-                    node(identity, "A", "B@spark", name="node2"),
-                ]
-            )
 
 
 @pytest.fixture
@@ -560,7 +565,7 @@ class TestComplexPipeline:
     def test_connected_pipeline(self, disjoint_pipeline):
         """Connect two separate pipelines."""
         nodes = disjoint_pipeline["nodes"]
-        subpipeline = Pipeline(nodes, name="subpipeline")
+        subpipeline = Pipeline(nodes, tags=["subpipeline"])
 
         assert len(subpipeline.inputs()) == 2
         assert len(subpipeline.outputs()) == 2
@@ -572,12 +577,6 @@ class TestComplexPipeline:
         assert len(pipeline.nodes) == 1 + len(nodes)
         assert len(pipeline.inputs()) == 1
         assert len(pipeline.outputs()) == 1
-        assert all(pipeline.name in n.tags for n in pipeline.nodes)
-        assert all(
-            subpipeline.name in n.tags
-            for n in pipeline.nodes
-            if n.name != "connecting_node"
-        )
 
     def test_node_dependencies(self, complex_pipeline):
         expected = {
@@ -720,17 +719,170 @@ class TestPipelineTags:
 
         assert get_nodes_with_tags(*tags) == expected_nodes
 
+    def test_tag_existing_pipeline(self, branchless_pipeline):
+        pipeline = Pipeline(branchless_pipeline["nodes"])
+        pipeline = pipeline.tag(["new_tag"])
+        assert all("new_tag" in n.tags for n in pipeline.nodes)
+
+    def test_pipeline_single_tag(self, branchless_pipeline):
+        p1 = Pipeline(branchless_pipeline["nodes"], tags="single_tag")
+        p2 = Pipeline(branchless_pipeline["nodes"]).tag("single_tag")
+
+        for pipeline in (p1, p2):
+            assert all("single_tag" in n.tags for n in pipeline.nodes)
+
 
 def test_pipeline_to_json(input_data):
     nodes = input_data["nodes"]
     json_rep = Pipeline(nodes).to_json()
     for pipeline_node in nodes:
         assert pipeline_node.name in json_rep
-        assert all(
-            node_input in json_rep for node_input in pipeline_node.input_namespaces
-        )
-        assert all(
-            node_output in json_rep for node_output in pipeline_node.output_namespaces
-        )
+        assert all(node_input in json_rep for node_input in pipeline_node.inputs)
+        assert all(node_output in json_rep for node_output in pipeline_node.outputs)
 
     assert kedro.__version__ in json_rep
+
+
+class TestTransformPipeline:
+    # pylint: disable=protected-access
+    def test_transform_dataset_names(self):
+        """
+        Rename some datasets, test string, list and dict formats.
+        """
+        raw_pipeline = Pipeline(
+            [
+                node(identity, "A", "B", name="node1"),
+                node(biconcat, ["C", "D"], ["E", "F"], name="node2"),
+                node(
+                    biconcat, {"input1": "H", "input2": "J"}, {"K": "L"}, name="node3"
+                ),
+            ]
+        )
+
+        pipeline = raw_pipeline.transform(
+            datasets={name: name + "_new" for name in ["A", "B", "D", "E", "H", "L"]}
+        )
+
+        # make sure the order is correct
+        nodes = list(sorted(pipeline.nodes, key=lambda item: item.name))
+        assert nodes[0]._inputs == "A_new"
+        assert nodes[0]._outputs == "B_new"
+
+        assert nodes[1]._inputs == ["C", "D_new"]
+        assert nodes[1]._outputs == ["E_new", "F"]
+
+        assert nodes[2]._inputs == {"input1": "H_new", "input2": "J"}
+        assert nodes[2]._outputs == {"K": "L_new"}
+
+    def test_prefix_dataset_names(self):
+        """
+        Simple prefixing for dataset of all formats: str, list and dict
+        """
+        raw_pipeline = Pipeline(
+            [
+                node(identity, "A", "B", name="node1"),
+                node(biconcat, ["C", "D"], ["E", "F"], name="node2"),
+                node(
+                    biconcat, {"input1": "H", "input2": "J"}, {"K": "L"}, name="node3"
+                ),
+            ]
+        )
+        pipeline = raw_pipeline.transform(prefix="PREFIX")
+        nodes = list(sorted(pipeline.nodes, key=lambda item: item.name))
+        assert nodes[0]._inputs == "PREFIX.A"
+        assert nodes[0]._outputs == "PREFIX.B"
+
+        assert nodes[1]._inputs == ["PREFIX.C", "PREFIX.D"]
+        assert nodes[1]._outputs == ["PREFIX.E", "PREFIX.F"]
+
+        assert nodes[2]._inputs == {"input1": "PREFIX.H", "input2": "PREFIX.J"}
+        assert nodes[2]._outputs == {"K": "PREFIX.L"}
+
+    def test_prefixing_and_renaming(self):
+        """
+        Prefixing and renaming at the same time.
+        Explicitly renamed  datasets should not be prefixed anymore.
+        """
+        raw_pipeline = Pipeline([node(biconcat, ["C", "D"], ["E", "F"])])
+        pipeline = raw_pipeline.transform(
+            prefix="PREFIX", datasets={"C": "C_new", "E": "E_new"}
+        )
+        assert pipeline.nodes[0]._inputs == ["C_new", "PREFIX.D"]
+        assert pipeline.nodes[0]._outputs == ["E_new", "PREFIX.F"]
+
+    def test_dataset_transcoding(self):
+        raw_pipeline = Pipeline([node(biconcat, ["C@pandas", "D"], ["E@spark", "F"])])
+        pipeline = raw_pipeline.transform(prefix="PREFIX", datasets={"C": "C_new"})
+
+        assert pipeline.nodes[0]._inputs == ["C_new@pandas", "PREFIX.D"]
+        assert pipeline.nodes[0]._outputs == ["PREFIX.E@spark", "PREFIX.F"]
+
+    def test_empty_input(self):
+        raw_pipeline = Pipeline([node(constant_output, None, ["A", "B"])])
+
+        pipeline = raw_pipeline.transform(prefix="PREFIX", datasets={"A": "A_new"})
+        assert pipeline.nodes[0]._inputs is None
+        assert pipeline.nodes[0]._outputs == ["A_new", "PREFIX.B"]
+
+    def test_empty_output(self):
+        raw_pipeline = Pipeline([node(biconcat, ["A", "B"], None)])
+
+        pipeline = raw_pipeline.transform(prefix="PREFIX", datasets={"A": "A_new"})
+        assert pipeline.nodes[0]._inputs == ["A_new", "PREFIX.B"]
+        assert pipeline.nodes[0]._outputs is None
+
+    @pytest.mark.parametrize(
+        "func, inputs, outputs, dataset_map, expected_missing",
+        [
+            # Testing inputs
+            (identity, "A", "OUT", {"A": "A_new", "B": "C", "D": "E"}, ["B", "D"]),
+            (biconcat, ["A", "B"], "OUT", {"C": "D"}, ["C"]),
+            (biconcat, {"input1": "A", "input2": "B"}, "OUT", {"C": "D"}, ["C"]),
+            # Testing outputs
+            (identity, "IN", "A", {"A": "A_new", "B": "C", "D": "E"}, ["B", "D"]),
+            (identity, "IN", ["A", "B"], {"C": "D"}, ["C"]),
+            (identity, "IN", {"input1": "A", "input2": "B"}, {"C": "D"}, ["C"]),
+            # Mix of both
+            (identity, "A", "B", {"A": "A_new", "B": "B_new", "C": "D"}, ["C"]),
+            (identity, ["A"], ["B"], {"A": "A_new", "B": "B_new", "C": "D"}, ["C"]),
+            (
+                identity,
+                {"input1": "A"},
+                {"out1": "B"},
+                {"A": "A_new", "B": "B_new", "C": "D"},
+                ["C"],
+            ),
+        ],
+    )
+    def test_missing_dataset_name(
+        self, func, inputs, outputs, dataset_map, expected_missing
+    ):  # pylint: disable=too-many-arguments
+        raw_pipeline = Pipeline([node(func, inputs, outputs)])
+
+        with pytest.raises(ValueError, match=r"Failed to map datasets:") as e:
+            raw_pipeline.transform(prefix="PREFIX", datasets=dataset_map)
+
+        assert repr(expected_missing) in str(e.value)
+
+    def test_node_properties_preserved(self):
+        """
+        Check that we don't loose any valuable properties on node cloning.
+        Also an explicitly defined name should get prefixed.
+        """
+        raw_pipeline = Pipeline([node(identity, "A", "B", name="node1", tags=["tag1"])])
+        raw_pipeline = raw_pipeline.decorate(lambda: None)
+        pipeline = raw_pipeline.transform(prefix="PREFIX")
+
+        assert pipeline.nodes[0].name == "PREFIX.node1"
+        assert pipeline.nodes[0].tags == {"tag1"}
+        assert len(pipeline.nodes[0]._decorators) == 1
+
+    def test_default_node_name_is_untouched(self):
+        """
+        Check that we don't loose any valuable properties on node cloning.
+        Default node name should not get prefixed.
+        """
+        raw_pipeline = Pipeline([node(identity, "A", "B")])
+        pipeline = raw_pipeline.transform(prefix="PREFIX")
+
+        assert not pipeline.nodes[0].name.startswith("PREFIX.")

@@ -14,8 +14,8 @@
 # ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF, OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
-# The QuantumBlack Visual Analytics Limited (“QuantumBlack”) name and logo
-# (either separately or in combination, “QuantumBlack Trademarks”) are
+# The QuantumBlack Visual Analytics Limited ("QuantumBlack") name and logo
+# (either separately or in combination, "QuantumBlack Trademarks") are
 # trademarks of QuantumBlack. The License does not grant you any right or
 # license to the QuantumBlack Trademarks. You may not use the QuantumBlack
 # Trademarks or any confusingly similar mark as a trademark for your product,
@@ -36,6 +36,8 @@ import numpy as np
 import pandas as pd
 
 from kedro.io.core import AbstractDataSet, DataSetError
+
+_EMPTY = object()
 
 
 class MemoryDataSet(AbstractDataSet):
@@ -62,44 +64,26 @@ class MemoryDataSet(AbstractDataSet):
 
     """
 
-    def _describe(self) -> Dict[str, Any]:
-        if self._data is not None:
-            return dict(data="<{}>".format(type(self._data).__name__))
-        return dict(data=None)  # pragma: no cover
-
-    def __init__(self, data: Any = None):
+    def __init__(self, data: Any = _EMPTY):
         """Creates a new instance of ``MemoryDataSet`` pointing to the
         provided Python object.
 
         Args:
             data: Python object containing the data.
         """
-        self._data = None
-        self._remaining_loads = None
-        if data is not None:
+        self._data = _EMPTY
+        if data is not _EMPTY:
             self._save(data)
 
     def _load(self) -> Any:
-        if self._data is None:
-            if self._remaining_loads == 0:
-                message = (
-                    "The MemoryDataSet was cleared and holds no data now, "
-                    "as the maximum number of loads exceeds the limit set "
-                    "by `.set_remaining_loads()`"
-                )
-            else:
-                message = "Data for MemoryDataSet has not been saved yet."
-            raise DataSetError(message)
+        if self._data is _EMPTY:
+            raise DataSetError("Data for MemoryDataSet has not been saved yet.")
         if isinstance(self._data, (pd.DataFrame, np.ndarray)):
             data = self._data.copy()
         elif type(self._data).__name__ == "DataFrame":
             data = self._data
         else:
             data = copy.deepcopy(self._data)
-        if self._remaining_loads:
-            self._remaining_loads -= 1
-            if self._remaining_loads == 0:
-                self._data = None
         return data
 
     def _save(self, data: Any):
@@ -111,20 +95,14 @@ class MemoryDataSet(AbstractDataSet):
             self._data = copy.deepcopy(data)
 
     def _exists(self) -> bool:
-        if self._data is None:
-            return False
-        return True
+        return self._data is not _EMPTY
 
-    def set_remaining_loads(self, remaining_loads: int):
-        """Set how many times this dataset can be loaded before its data being cleared to release
-        memory. Calling this method on a ``MemoryDataSet`` that already contains data has no
-        effect.
+    def _release(self) -> None:
+        self._data = _EMPTY
 
-        Args:
-            remaining_loads: Maximum number of times ``load`` method of the
-                data set is allowed to be invoked, before clearing the
-                data to release memory. Any number of calls is allowed
-                if the argument is not set.
-        """
-        if self._data is not None:
-            self._remaining_loads = remaining_loads
+    def _describe(self) -> Dict[str, Any]:
+        if self._data is not _EMPTY:
+            return dict(data="<{}>".format(type(self._data).__name__))
+        # the string representation of datasets leaves out __init__
+        # arguments that are empty/None, equivalent here is _EMPTY
+        return dict(data=None)  # pragma: no cover

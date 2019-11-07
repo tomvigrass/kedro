@@ -14,8 +14,8 @@
 # ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF, OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
-# The QuantumBlack Visual Analytics Limited (“QuantumBlack”) name and logo
-# (either separately or in combination, “QuantumBlack Trademarks”) are
+# The QuantumBlack Visual Analytics Limited ("QuantumBlack") name and logo
+# (either separately or in combination, "QuantumBlack Trademarks") are
 # trademarks of QuantumBlack. The License does not grant you any right or
 # license to the QuantumBlack Trademarks. You may not use the QuantumBlack
 # Trademarks or any confusingly similar mark as a trademark for your product,
@@ -26,13 +26,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import sys
-from functools import wraps
+from functools import partial, update_wrapper, wraps
 from typing import Callable
 
 import pytest
 
 from kedro.pipeline import node
-from kedro.pipeline.node import Node
 
 
 # Different dummy func based on the number of arguments
@@ -52,6 +51,12 @@ def triconcat(input1: str, input2: str, input3: str):
     return input1 + input2 + input3  # pragma: no cover
 
 
+def kwarg_node(
+    arg1, arg2, *args, arg3, arg_10=0, **extra  # pylint: disable=unused-argument
+):
+    pass  # pragma: no cover
+
+
 @pytest.fixture
 def simple_tuple_node_list():
     return [
@@ -67,6 +72,7 @@ def simple_tuple_node_list():
         (constant_output, None, "M"),
         (biconcat, ["N", "O"], None),
         (lambda x: None, "F", "G"),
+        (lambda x: ("a", "b"), "G", ["X", "Y"]),
     ]
 
 
@@ -79,6 +85,22 @@ class TestValidNode:
         assert "labeled_node: <lambda>([input1]) -> [output1]" in str(
             node(lambda x: None, "input1", "output1", name="labeled_node")
         )
+
+    def test_call(self):
+        dummy_node = node(
+            biconcat, inputs=["input1", "input2"], outputs="output", name="myname"
+        )
+        actual = dummy_node(input1="in1", input2="in2")
+        expected = dummy_node.run(dict(input1="in1", input2="in2"))
+        assert actual == expected
+
+    def test_call_with_non_keyword_arguments(self):
+        dummy_node = node(
+            biconcat, inputs=["input1", "input2"], outputs="output", name="myname"
+        )
+        pattern = r"__call__\(\) takes 1 positional argument but 2 were given"
+        with pytest.raises(TypeError, match=pattern):
+            dummy_node("in1", input2="in2")
 
     def test_no_input(self):
         assert "constant_output(None) -> [output1]" in str(
@@ -106,6 +128,15 @@ class TestValidNode:
         assert isinstance(inputs, list)
         assert len(inputs) == 2
         assert set(inputs) == {"in1", "in2"}
+
+    def test_inputs_dict_order(self):
+        dummy = node(
+            kwarg_node,
+            {"arg5": "a", "arg4": "b", "arg3": "c", "arg2": "d", "arg1": "e"},
+            None,
+        )
+        # a and b and c are keyword args, so they should be sorted
+        assert dummy.inputs == ["e", "d", "a", "b", "c"]
 
     def test_inputs_list(self):
         dummy_node = node(
@@ -139,36 +170,6 @@ class TestValidNode:
             ["output2", "output1", "last node"],
         )
         assert dummy_node.outputs == ["output2", "output1", "last node"]
-
-    def test_input_namespaces(self):
-        dummy_node = node(
-            triconcat, ["input@formA", "input@formB", "another node"], "output"
-        )
-        assert dummy_node.input_namespaces == ["input", "input", "another node"]
-
-    def test_output_namespaces(self):
-        dummy_node = node(
-            triconcat,
-            ["input@formA", "input@formB", "another node"],
-            ["output@formC", "output@formD"],
-        )
-        assert dummy_node.output_namespaces == ["output", "output"]
-
-    def test_get_namespace(self):
-        dataset_name = "mydata@pandas"
-        assert Node.get_namespace(dataset_name) == "mydata"
-
-    def test_get_namespace_no_separator(self):
-        dataset_name = "mydata"
-        assert Node.get_namespace(dataset_name) == dataset_name
-
-    def test_get_namespace_multiple_separators(self):
-        dataset_name = "mydata@formA@formB"
-        pattern = "Expected maximum 1 transcoding separator, "
-        pattern += "found 2 instead: 'mydata@formA@formB'"
-
-        with pytest.raises(ValueError, match=pattern):
-            Node.get_namespace(dataset_name)
 
 
 class TestNodeComparisons:
@@ -237,7 +238,7 @@ def bad_input_type_node():
 
 
 def bad_output_type_node():
-    return lambda x: None, "A", ("B", "C")
+    return lambda x: None, "A", {"B", "C"}
 
 
 def bad_function_type_node():
@@ -383,6 +384,12 @@ class TestTagDecorator:
         assert "world" in tagged_node.tags
         assert len(tagged_node.tags) == 2
 
+    def test_tag_nodes_single_tag(self):
+        tagged_node = node(identity, "input", "output", tags="hello").tag("world")
+        assert "hello" in tagged_node.tags
+        assert "world" in tagged_node.tags
+        assert len(tagged_node.tags) == 2
+
     def test_tag_and_decorate(self):
         tagged_node = node(identity, "input", "output", tags=["hello"])
         tagged_node = tagged_node.decorate(apply_f)
@@ -390,3 +397,35 @@ class TestTagDecorator:
         assert "hello" in tagged_node.tags
         assert "world" in tagged_node.tags
         assert tagged_node.run(dict(input=1))["output"] == "f(1)"
+
+
+class TestNames:
+    def test_named(self):
+        n = node(identity, ["in"], ["out"], name="name")
+        assert str(n) == "name: identity([in]) -> [out]"
+        assert n.name == "name"
+        assert n.short_name == "name"
+
+    def test_function(self):
+        n = node(identity, ["in"], ["out"])
+        assert str(n) == "identity([in]) -> [out]"
+        assert n.name == "identity([in]) -> [out]"
+        assert n.short_name == "Identity"
+
+    def test_lambda(self):
+        n = node(lambda a: a, ["in"], ["out"])
+        assert str(n) == "<lambda>([in]) -> [out]"
+        assert n.name == "<lambda>([in]) -> [out]"
+        assert n.short_name == "<Lambda>"
+
+    def test_partial(self):
+        n = node(partial(identity), ["in"], ["out"])
+        assert str(n) == "<partial>([in]) -> [out]"
+        assert n.name == "<partial>([in]) -> [out]"
+        assert n.short_name == "<Partial>"
+
+    def test_updated_partial(self):
+        n = node(update_wrapper(partial(identity), identity), ["in"], ["out"])
+        assert str(n) == "identity([in]) -> [out]"
+        assert n.name == "identity([in]) -> [out]"
+        assert n.short_name == "Identity"

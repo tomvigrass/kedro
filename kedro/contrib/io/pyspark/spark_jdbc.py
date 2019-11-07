@@ -14,8 +14,8 @@
 # ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF, OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
-# The QuantumBlack Visual Analytics Limited (“QuantumBlack”) name and logo
-# (either separately or in combination, “QuantumBlack Trademarks”) are
+# The QuantumBlack Visual Analytics Limited ("QuantumBlack") name and logo
+# (either separately or in combination, "QuantumBlack Trademarks") are
 # trademarks of QuantumBlack. The License does not grant you any right or
 # license to the QuantumBlack Trademarks. You may not use the QuantumBlack
 # Trademarks or any confusingly similar mark as a trademark for your product,
@@ -26,17 +26,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """SparkJDBCDataSet to load and save a PySpark DataFrame via JDBC."""
-import pickle
 from typing import Any, Dict, Optional
 
 from pyspark.sql import DataFrame, SparkSession
 
+from kedro.contrib.io import DefaultArgumentsMixIn
 from kedro.io import AbstractDataSet, DataSetError
 
 __all__ = ["SparkJDBCDataSet"]
 
 
-class SparkJDBCDataSet(AbstractDataSet):
+class SparkJDBCDataSet(DefaultArgumentsMixIn, AbstractDataSet):
     """``SparkJDBCDataSet`` loads data from a database table accessible
     via JDBC URL url and connection properties and saves the content of
     a PySpark DataFrame to an external database table via JDBC.  It uses
@@ -140,8 +140,7 @@ class SparkJDBCDataSet(AbstractDataSet):
 
         self._url = url
         self._table = table
-        self._load_args = load_args if load_args is not None else {}
-        self._save_args = save_args if save_args is not None else {}
+        super().__init__(load_args, save_args)
 
         # Update properties in load_args and save_args with credentials.
         if credentials is not None:
@@ -159,6 +158,3 @@ class SparkJDBCDataSet(AbstractDataSet):
 
     def _save(self, data: DataFrame) -> None:
         return data.write.jdbc(self._url, self._table, **self._save_args)
-
-    def __getstate__(self):
-        raise pickle.PicklingError("PySpark datasets can't be serialized")

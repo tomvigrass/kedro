@@ -14,8 +14,8 @@
 # ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF, OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
-# The QuantumBlack Visual Analytics Limited (“QuantumBlack”) name and logo
-# (either separately or in combination, “QuantumBlack Trademarks”) are
+# The QuantumBlack Visual Analytics Limited ("QuantumBlack") name and logo
+# (either separately or in combination, "QuantumBlack Trademarks") are
 # trademarks of QuantumBlack. The License does not grant you any right or
 # license to the QuantumBlack Trademarks. You may not use the QuantumBlack
 # Trademarks or any confusingly similar mark as a trademark for your product,
@@ -31,7 +31,7 @@ implementations.
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict
+from typing import Any, Dict, Iterable
 
 from kedro.io import AbstractDataSet, DataCatalog
 from kedro.pipeline import Pipeline
@@ -78,10 +78,6 @@ class AbstractRunner(ABC):
         unregistered_ds = pipeline.data_sets() - set(catalog.list())
         for ds_name in unregistered_ds:
             catalog.add(ds_name, self.create_default_data_set(ds_name))
-
-        for ds_name in pipeline.all_inputs():
-            num_loads = len(pipeline.only_nodes_with_inputs(ds_name).nodes)
-            catalog.set_remaining_loads(ds_name, num_loads)
 
         self._run(pipeline, catalog)
 
@@ -149,6 +145,25 @@ class AbstractRunner(ABC):
 
         """
         pass
+
+    def _suggest_resume_scenario(
+        self, pipeline: Pipeline, done_nodes: Iterable[Node]
+    ) -> None:
+        remaining_nodes = set(pipeline.nodes) - set(done_nodes)
+        command = "kedro run"
+
+        if done_nodes:
+            node_names = [n.name for n in remaining_nodes]
+            resume_pipeline = pipeline.only_nodes(*node_names)
+
+            command += " --from-inputs {}".format(",".join(resume_pipeline.inputs()))
+
+        self._logger.warning(
+            "There are %d nodes that have not run.\n"
+            "You can resume the pipeline run with the following command:\n%s",
+            len(remaining_nodes),
+            command,
+        )
 
 
 def run_node(node: Node, catalog: DataCatalog) -> Node:

@@ -1,63 +1,57 @@
 import logging.config
-import os
 from pathlib import Path
+import sys
 
 from IPython.core.magic import register_line_magic
 
+# Find the project root (./../../../)
+startup_error = None
+project_path = Path(__file__).parents[3].resolve()
+
 
 @register_line_magic
-def reload_kedro(line=None):
+def reload_kedro(path, line=None):
     """"Line magic which reloads all Kedro default variables."""
-    global proj_dir
-    global proj_name
-    global conf
-    global io
     global startup_error
+    global context
+    global catalog
+
     try:
         import kedro.config.default_logger
         from kedro.context import load_context
-
-        proj_name = "{{cookiecutter.project_name}}"
-        logging.info("** Kedro project {}".format(proj_name))
-
-        project_context = load_context(proj_dir)
-
-        conf = project_context["get_config"](proj_dir)
-        io = project_context["create_catalog"](conf)
-
-        logging.info("Defined global variables proj_dir, proj_name, conf and io")
+        from kedro.cli.jupyter import collect_line_magic
     except ImportError:
-        logging.error("Kedro appears not to be installed in your current environment.")
+        logging.error(
+            "Kedro appears not to be installed in your current environment "
+            "or your current IPython session was not started in a valid Kedro project."
+        )
         raise
-    except KeyError as err:
-        startup_error = err
-        if "create_catalog" in str(err):
-            message = (
-                "The function `create_catalog` is missing from "
-                "{{cookiecutter.repo_name}}/src/"
-                "{{cookiecutter.python_package}}/run.py."
-                "\nEither restore this function, or update "
-                "{{cookiecutter.repo_name}}/"
-                ".ipython/profile_default/startup/00-kedro-init.py."
-            )
-        elif "get_config" in str(err):
-            message = (
-                "The function `get_config` is missing from "
-                "{{cookiecutter.repo_name}}/src/"
-                "{{cookiecutter.python_package}}/run.py."
-                "\nEither restore this function, or update "
-                "{{cookiecutter.repo_name}}/"
-                ".ipython/profile_default/startup/00-kedro-init.py."
-            )
-        logging.error(message)
-        raise err
+
+    try:
+        path = path or project_path
+        logging.debug("Loading the context from %s", str(path))
+
+        context = load_context(path)
+        catalog = context.catalog
+
+        # remove cached user modules
+        package_name = context.__module__.split(".")[0]
+        to_remove = [mod for mod in sys.modules if mod.startswith(package_name)]
+        for module in to_remove:
+            del sys.modules[module]
+
+        logging.info("** Kedro project %s", str(context.project_name))
+        logging.info("Defined global variable `context` and `catalog`")
+
+        for line_magic in collect_line_magic():
+            register_line_magic(line_magic)
+            logging.info("Registered line magic `%s`", line_magic.__name__)
     except Exception as err:
         startup_error = err
-        logging.error("Kedro's ipython session startup script failed:\n%s", str(err))
+        logging.exception(
+            "Kedro's ipython session startup script failed:\n%s", str(err)
+        )
         raise err
 
 
-# Find the project root (./../../../)
-startup_error = None
-proj_dir = str(Path(__file__).parents[3].resolve())
-reload_kedro()
+reload_kedro(project_path)

@@ -14,8 +14,8 @@
 # ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF, OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
-# The QuantumBlack Visual Analytics Limited (“QuantumBlack”) name and logo
-# (either separately or in combination, “QuantumBlack Trademarks”) are
+# The QuantumBlack Visual Analytics Limited ("QuantumBlack") name and logo
+# (either separately or in combination, "QuantumBlack Trademarks") are
 # trademarks of QuantumBlack. The License does not grant you any right or
 # license to the QuantumBlack Trademarks. You may not use the QuantumBlack
 # Trademarks or any confusingly similar mark as a trademark for your product,
@@ -28,7 +28,7 @@
 
 """
 This file contains the fixtures that are reusable by any tests within
-this directory. You don’t need to import the fixtures as pytest will
+this directory. You don't need to import the fixtures as pytest will
 discover them automatically. More info here:
 https://docs.pytest.org/en/latest/fixture.html
 """
@@ -47,3 +47,15 @@ def cli_runner_fixture():
     with runner.isolated_filesystem():
         makedirs(MOCKED_HOME)
         yield runner
+
+
+@fixture
+def entry_points(mocker):
+    return mocker.patch("pkg_resources.iter_entry_points")
+
+
+@fixture
+def entry_point(mocker, entry_points):
+    ep = mocker.MagicMock()
+    entry_points.return_value = [ep]
+    return ep

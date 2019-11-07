@@ -14,8 +14,8 @@
 # ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF, OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
-# The QuantumBlack Visual Analytics Limited (“QuantumBlack”) name and logo
-# (either separately or in combination, “QuantumBlack Trademarks”) are
+# The QuantumBlack Visual Analytics Limited ("QuantumBlack") name and logo
+# (either separately or in combination, "QuantumBlack Trademarks") are
 # trademarks of QuantumBlack. The License does not grant you any right or
 # license to the QuantumBlack Trademarks. You may not use the QuantumBlack
 # Trademarks or any confusingly similar mark as a trademark for your product,
@@ -118,10 +118,12 @@ def mem_profile(func: Callable) -> Callable:
             retval=True,
             include_children=True,
         )
+        # memory_profiler < 0.56.0 returns list instead of float
+        mem_usage = mem_usage[0] if isinstance(mem_usage, (list, tuple)) else mem_usage
         log.info(
             "Running %r consumed %2.2fMiB memory at peak time",
             _func_full_name(func),
-            mem_usage[0],
+            mem_usage,
         )
         return result
 
